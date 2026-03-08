@@ -8,6 +8,7 @@ const els = {
   authPassword: document.getElementById("auth-password"),
   signInBtn: document.getElementById("signin-btn"),
   signUpBtn: document.getElementById("signup-btn"),
+  resetPasswordBtn: document.getElementById("reset-password-btn"),
   logoutBtn: document.getElementById("logout-btn"),
   authMessage: document.getElementById("auth-message"),
   userChip: document.getElementById("user-chip"),
@@ -318,17 +319,30 @@ async function signIn() {
   const email = safeText(els.authEmail.value);
   const password = safeText(els.authPassword.value);
 
-  const { data, error } = await state.supabase.auth.signInWithPassword({ email, password });
-  if (error) {
-    setMessage(els.authMessage, error.message, true);
+  if (!email || !password) {
+    setMessage(els.authMessage, "Enter both email and password.", true);
     return;
   }
 
-  state.session = data.session;
-  state.user = data.user;
-  updateAppVisibility();
-  loadCollection();
-  setMessage(els.authMessage, "Signed in.");
+  try {
+    const { data, error } = await state.supabase.auth.signInWithPassword({ email, password });
+    if (error) {
+      setMessage(els.authMessage, error.message, true);
+      return;
+    }
+
+    state.session = data.session;
+    state.user = data.user;
+    updateAppVisibility();
+    loadCollection();
+    setMessage(els.authMessage, "Signed in.");
+  } catch (error) {
+    setMessage(
+      els.authMessage,
+      "Failed to fetch. This usually means your Supabase URL/key is wrong, your project is paused, or the browser cannot reach Supabase right now.",
+      true
+    );
+  }
 }
 
 async function signUp() {
@@ -336,21 +350,61 @@ async function signUp() {
   const email = safeText(els.authEmail.value);
   const password = safeText(els.authPassword.value);
 
-  const { data, error } = await state.supabase.auth.signUp({ email, password });
-  if (error) {
-    setMessage(els.authMessage, error.message, true);
+  if (!email || !password) {
+    setMessage(els.authMessage, "Enter both email and password.", true);
     return;
   }
 
-  setMessage(
-    els.authMessage,
-    data?.session ? "Account created and signed in." : "Account created. Check your email if confirmation is enabled."
-  );
+  if (password.length < 6) {
+    setMessage(els.authMessage, "Use a password with at least 6 characters.", true);
+    return;
+  }
 
-  state.session = data.session || null;
-  state.user = data.user || null;
-  updateAppVisibility();
-  loadCollection();
+  try {
+    const { data, error } = await state.supabase.auth.signUp({ email, password });
+    if (error) {
+      setMessage(els.authMessage, error.message, true);
+      return;
+    }
+
+    setMessage(
+      els.authMessage,
+      data?.session
+        ? "Account created and signed in."
+        : "Account created. Check your email for a confirmation link if email confirmation is enabled."
+    );
+
+    state.session = data.session || null;
+    state.user = data.user || null;
+    updateAppVisibility();
+    loadCollection();
+  } catch (error) {
+    setMessage(
+      els.authMessage,
+      "Failed to fetch. This usually means your Supabase URL/key is wrong, your project is paused, or the browser cannot reach Supabase right now.",
+      true
+    );
+  }
+}
+
+async function resetPassword() {
+  const email = safeText(els.authEmail.value);
+  if (!email) {
+    setMessage(els.authMessage, "Enter your email first, then click Reset password.", true);
+    return;
+  }
+
+  try {
+    const redirectTo = window.location.origin;
+    const { error } = await state.supabase.auth.resetPasswordForEmail(email, { redirectTo });
+    if (error) {
+      setMessage(els.authMessage, error.message, true);
+      return;
+    }
+    setMessage(els.authMessage, "Password reset email sent. Check your inbox.");
+  } catch (error) {
+    setMessage(els.authMessage, "Could not send reset email. Verify your Supabase URL and that the project is reachable.", true);
+  }
 }
 
 async function signOut() {
@@ -370,19 +424,42 @@ async function initAuth() {
     return;
   }
 
-  state.supabase = createClient(APP_CONFIG.SUPABASE_URL, APP_CONFIG.SUPABASE_ANON_KEY);
-  const { data: sessionData } = await state.supabase.auth.getSession();
-  state.session = sessionData.session;
-  state.user = sessionData.session?.user || null;
-  updateAppVisibility();
-  loadCollection();
+  if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(APP_CONFIG.SUPABASE_URL)) {
+    setMessage(els.authMessage, "Your SUPABASE_URL in config.js does not look valid. It should look like https://your-project.supabase.co", true);
+    return;
+  }
 
-  state.supabase.auth.onAuthStateChange((_event, session) => {
-    state.session = session;
-    state.user = session?.user || null;
+  try {
+    state.supabase = createClient(APP_CONFIG.SUPABASE_URL, APP_CONFIG.SUPABASE_ANON_KEY, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true
+      }
+    });
+
+    const { data: sessionData, error: sessionError } = await state.supabase.auth.getSession();
+    if (sessionError) {
+      setMessage(els.authMessage, sessionError.message || "Could not read your auth session.", true);
+    }
+
+    state.session = sessionData?.session || null;
+    state.user = sessionData?.session?.user || null;
     updateAppVisibility();
     loadCollection();
-  });
+
+    state.supabase.auth.onAuthStateChange((_event, session) => {
+      state.session = session;
+      state.user = session?.user || null;
+      updateAppVisibility();
+      loadCollection();
+    });
+  } catch (error) {
+    setMessage(
+      els.authMessage,
+      (error?.message || "Supabase could not be reached.") + " Check config.js and make sure your Supabase project is active.",
+      true
+    );
+  }
 }
 
 async function startCamera() {
@@ -458,6 +535,7 @@ function handleBinderActions(event) {
 function bindEvents() {
   els.signInBtn.addEventListener("click", signIn);
   els.signUpBtn.addEventListener("click", signUp);
+  if (els.resetPasswordBtn) els.resetPasswordBtn.addEventListener("click", resetPassword);
   els.logoutBtn.addEventListener("click", signOut);
   els.searchForm.addEventListener("submit", searchCards);
   els.clearSearchBtn.addEventListener("click", () => {
@@ -476,6 +554,8 @@ function bindEvents() {
   els.retakePhotoBtn.addEventListener("click", retakePhoto);
   els.stopCameraBtn.addEventListener("click", () => stopCamera());
 }
+
+console.log('PokéVault config', { supabaseUrl: APP_CONFIG.SUPABASE_URL, hasAnonKey: !!APP_CONFIG.SUPABASE_ANON_KEY });
 
 bindEvents();
 renderAll();
